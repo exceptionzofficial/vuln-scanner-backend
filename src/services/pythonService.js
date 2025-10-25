@@ -1,4 +1,4 @@
-// src/services/pythonService.js - VERCEL COMPATIBLE
+// src/services/pythonService.js
 const { spawn } = require('child_process');
 const path = require('path');
 
@@ -6,26 +6,11 @@ class PythonService {
   static async executeScan(targetUrl) {
     return new Promise((resolve, reject) => {
       const scriptPath = path.join(__dirname, '../../scanner.py');
+      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
       
-      // Vercel uses 'python3.9' or 'python' depending on the runtime
-      // Try multiple python commands in order
-      const pythonCommands = ['python3.9', 'python3', 'python'];
+      console.log(`Executing scan for: ${targetUrl}`);
       
-      // Detect if running on Vercel or locally
-      const isVercel = process.env.VERCEL === '1' || process.env.NOW_REGION;
-      const pythonCmd = isVercel ? 'python3.9' : (process.platform === 'win32' ? 'python' : 'python3');
-      
-      console.log(`Executing Python scanner: ${pythonCmd} ${scriptPath}`);
-      console.log(`Target URL: ${targetUrl}`);
-      console.log(`Environment: ${isVercel ? 'Vercel' : 'Local'}`);
-      
-      const pythonProcess = spawn(pythonCmd, [scriptPath, targetUrl], {
-        env: {
-          ...process.env,
-          PYTHONPATH: path.join(__dirname, '../../'),
-          PYTHONUNBUFFERED: '1'
-        }
-      });
+      const pythonProcess = spawn(pythonCmd, [scriptPath, targetUrl]);
       
       let outputData = '';
       let errorData = '';
@@ -41,9 +26,8 @@ class PythonService {
       
       pythonProcess.on('close', (code) => {
         if (code !== 0) {
-          console.error('Scanner failed with code:', code);
-          console.error('Error output:', errorData);
-          return reject(new Error(`Scanner failed with code ${code}: ${errorData}`));
+          console.error('Scanner failed:', errorData);
+          return reject(new Error(`Scanner failed with code ${code}`));
         }
         
         try {
@@ -54,20 +38,20 @@ class PythonService {
           });
           resolve(result);
         } catch (parseError) {
-          console.error('Failed to parse scanner output:', outputData);
+          console.error('Failed to parse output:', outputData);
           reject(new Error(`Failed to parse scanner output: ${parseError.message}`));
         }
       });
       
       pythonProcess.on('error', (error) => {
-        console.error('Failed to start Python process:', error);
+        console.error('Failed to start scanner:', error);
         reject(new Error(`Failed to start scanner: ${error.message}`));
       });
       
       setTimeout(() => {
         pythonProcess.kill();
-        reject(new Error('Scan timeout - operation took too long'));
-      }, 60000);
+        reject(new Error('Scan timeout'));
+      }, 60000); // 60 second timeout
     });
   }
 }

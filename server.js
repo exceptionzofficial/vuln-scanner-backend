@@ -1,10 +1,10 @@
 // server.js
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios');
 require('dotenv').config();
 
 const authController = require('./src/controllers/authController');
-const scanController = require('./src/controllers/scanController');
 const userController = require('./src/controllers/userController');
 const { authenticate } = require('./src/middleware/authenticate');
 const rateLimiter = require('./src/middleware/rateLimiter');
@@ -14,71 +14,18 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Request logging
-app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-  next();
-});
+// Python Scanner Service URL
+const PYTHON_SCANNER_URL = process.env.PYTHON_SCANNER_URL || 'https://vuln-scanner-python.vercel.app';
 
 // Health check
 app.get('/', (req, res) => {
   res.json({
-    service: 'VulnScanner API',
+    service: 'VulnScanner API (Node.js)',
     version: '1.0.0',
     status: 'running',
-    timestamp: new Date().toISOString()
+    pythonScanner: PYTHON_SCANNER_URL
   });
-});
-
-// ==================== TEST SCAN ROUTE (NO AUTH) ====================
-// server.js - Update test-scan route
-app.post('/test-scan', async (req, res) => {
-  try {
-    const { targetUrl } = req.body;
-    
-    if (!targetUrl || !targetUrl.startsWith('http')) {
-      return res.status(400).json({
-        success: false,
-        error: 'Valid URL required (http:// or https://)'
-      });
-    }
-
-    console.log(`Test scan requested for: ${targetUrl}`);
-
-    // Check if running on Vercel
-    const isVercel = process.env.VERCEL === '1';
-    
-    if (isVercel) {
-      // On Vercel: Call Python API endpoint
-      const axios = require('axios');
-      const baseUrl = process.env.VERCEL_URL || 'vuln-scanner-backend-five.vercel.app';
-      const pythonApiUrl = `https://${baseUrl}/api/scanner`;
-      
-      console.log('Calling Python API:', pythonApiUrl);
-      
-      const response = await axios.post(pythonApiUrl, { targetUrl }, {
-        timeout: 60000,
-        headers: { 'Content-Type': 'application/json' }
-      });
-      
-      return res.status(200).json(response.data);
-      
-    } else {
-      // Local: Use pythonService
-      const PythonService = require('./src/services/pythonService');
-      const scanResult = await PythonService.executeScan(targetUrl);
-      return res.status(200).json(scanResult);
-    }
-
-  } catch (error) {
-    console.error('Test scan error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Scan failed'
-    });
-  }
 });
 
 // ==================== AUTH ROUTES ====================
@@ -89,38 +36,91 @@ app.get('/api/auth/verify', authenticate, authController.verifyToken);
 // ==================== USER ROUTES ====================
 app.get('/api/user/profile', authenticate, userController.getProfile);
 app.get('/api/user/usage', authenticate, userController.getUsage);
-app.put('/api/user/profile', authenticate, userController.updateProfile);
 
 // ==================== SCAN ROUTES ====================
-app.post('/api/scans', authenticate, rateLimiter, scanController.submitScan);
-app.get('/api/scans/:scanId', authenticate, scanController.getScanResult);
-app.get('/api/scans', authenticate, scanController.getScanHistory);
-app.delete('/api/scans/:scanId', authenticate, scanController.deleteScan);
+
+// Test scan (no auth)
+app.post('/test-scan', async (req, res) => {
+  try {
+    const { targetUrl } = req.body;
+    
+    if (!targetUrl) {
+      return res.status(400).json({ error: 'Target URL required' });
+    }
+
+    console.log('Forwarding scan request to Python service:', targetUrl);
+
+    // Call Python service
+    const response = await axios.post(
+      `${PYTHON_SCANNER_URL}/api/scan`,
+      { targetUrl },
+      { 
+        timeout: 120000,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+
+    return res.json(response.data);
+
+  } catch (error) {
+    console.error('Scan error:', error.message);
+    return res.status(500).json({ 
+      error: error.response?.data?.error || 'Scan failed' 
+    });
+  }
+});
+
+// Authenticated scan (with rate limiting)
+app.post('/api/scans', authenticate, rateLimiter, async (req, res) => {
+  try {
+    const { targetUrl } = req.body;
+    const userId = req.userId;
+    
+    console.log(`User ${userId} requesting scan for: ${targetUrl}`);
+
+    // Call Python service
+    const scanResponse = await axios.post(
+      `${PYTHON_SCANNER_URL}/api/scan`,
+      { targetUrl },
+      { 
+        timeout: 120000,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+
+    const scanResult = scanResponse.data;
+
+    // TODO: Save scan to DynamoDB with userId
+    // const savedScan = await saveScanToDatabase(userId, scanResult);
+
+    // Update user scan count
+    // await updateUserScanCount(userId);
+
+    return res.json({
+      success: true,
+      scan: scanResult,
+      scanId: Date.now().toString(), // TODO: Use actual scan ID from DB
+      scansLeft: 2 // TODO: Get from user record
+    });
+
+  } catch (error) {
+    console.error('Scan error:', error.message);
+    return res.status(500).json({ 
+      error: error.response?.data?.error || 'Scan failed' 
+    });
+  }
+});
 
 // ==================== ERROR HANDLING ====================
-app.use((err, req, res, next) => {
-  console.error('Error:', err);
-  res.status(err.status || 500).json({
-    success: false,
-    error: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  });
-});
-
-// 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Route not found'
-  });
+  res.status(404).json({ error: 'Route not found' });
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🚀 Node.js server: http://localhost:${PORT}`);
+    console.log(`🐍 Python scanner: ${PYTHON_SCANNER_URL}`);
   });
 }
 

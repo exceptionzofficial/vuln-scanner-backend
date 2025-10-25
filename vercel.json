@@ -4,10 +4,6 @@
     {
       "src": "server.js",
       "use": "@vercel/node"
-    },
-    {
-      "src": "api/scanner.py",
-      "use": "@vercel/python"
     }
   ],
   "routes": [
