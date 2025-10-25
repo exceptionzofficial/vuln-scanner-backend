@@ -33,6 +33,7 @@ app.get('/', (req, res) => {
 });
 
 // ==================== TEST SCAN ROUTE (NO AUTH) ====================
+// server.js - Update test-scan route
 app.post('/test-scan', async (req, res) => {
   try {
     const { targetUrl } = req.body;
@@ -46,14 +47,30 @@ app.post('/test-scan', async (req, res) => {
 
     console.log(`Test scan requested for: ${targetUrl}`);
 
-    const PythonService = require('./src/services/pythonService');
+    // Check if running on Vercel
+    const isVercel = process.env.VERCEL === '1';
     
-    // Execute scan
-    const scanResult = await PythonService.executeScan(targetUrl);
-    
-    console.log(`Scan completed: ${scanResult.vulnerabilitiesFound} vulnerabilities found`);
-    
-    return res.status(200).json(scanResult);
+    if (isVercel) {
+      // On Vercel: Call Python API endpoint
+      const axios = require('axios');
+      const baseUrl = process.env.VERCEL_URL || 'vuln-scanner-backend-five.vercel.app';
+      const pythonApiUrl = `https://${baseUrl}/api/scanner`;
+      
+      console.log('Calling Python API:', pythonApiUrl);
+      
+      const response = await axios.post(pythonApiUrl, { targetUrl }, {
+        timeout: 60000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      return res.status(200).json(response.data);
+      
+    } else {
+      // Local: Use pythonService
+      const PythonService = require('./src/services/pythonService');
+      const scanResult = await PythonService.executeScan(targetUrl);
+      return res.status(200).json(scanResult);
+    }
 
   } catch (error) {
     console.error('Test scan error:', error);
