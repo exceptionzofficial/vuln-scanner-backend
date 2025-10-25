@@ -32,6 +32,38 @@ app.get('/', (req, res) => {
   });
 });
 
+// ==================== TEST SCAN ROUTE (NO AUTH) ====================
+app.post('/test-scan', async (req, res) => {
+  try {
+    const { targetUrl } = req.body;
+    
+    if (!targetUrl || !targetUrl.startsWith('http')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid URL required (http:// or https://)'
+      });
+    }
+
+    console.log(`Test scan requested for: ${targetUrl}`);
+
+    const PythonService = require('./src/services/pythonService');
+    
+    // Execute scan
+    const scanResult = await PythonService.executeScan(targetUrl);
+    
+    console.log(`Scan completed: ${scanResult.vulnerabilitiesFound} vulnerabilities found`);
+    
+    return res.status(200).json(scanResult);
+
+  } catch (error) {
+    console.error('Test scan error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Scan failed'
+    });
+  }
+});
+
 // ==================== AUTH ROUTES ====================
 app.post('/api/auth/register', authController.register);
 app.post('/api/auth/login', authController.login);
