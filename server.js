@@ -364,7 +364,7 @@ app.post('/api/scans', async (req, res) => {
   }
 });
 
-// Get scan history
+// Get user's scan history
 app.get('/api/scans', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -375,7 +375,10 @@ app.get('/api/scans', async (req, res) => {
     const token = authHeader.substring(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
 
-    const scans = await dynamoService.getUserScans(decoded.userId, 10);
+    console.log('Fetching scan history for user:', decoded.userId);
+
+    // Get user's scans from DynamoDB
+    const scans = await dynamoService.getUserScans(decoded.userId, 20);
 
     return res.json({
       success: true,
@@ -387,7 +390,7 @@ app.get('/api/scans', async (req, res) => {
     console.error('Get scans error:', error);
     return res.status(500).json({
       success: false,
-      error: 'Failed to get scan history',
+      error: 'Failed to fetch scan history',
     });
   }
 });

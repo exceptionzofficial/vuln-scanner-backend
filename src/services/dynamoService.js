@@ -6,6 +6,7 @@ const {
   GetCommand,
   QueryCommand,
   UpdateCommand,
+  ScanCommand,
 } = require('@aws-sdk/lib-dynamodb');
 
 const client = new DynamoDBClient({
@@ -107,21 +108,26 @@ class DynamoService {
     return params.Item;
   }
 
-  async getUserScans(userId, limit = 10) {
-    const params = {
-      TableName: TABLES.SCANS,
-      KeyConditionExpression: 'userId = :userId',
-      ExpressionAttributeValues: {
-        ':userId': userId,
-      },
-      Limit: limit,
-      ScanIndexForward: false,
-    };
+async getUserScans(userId, limit = 20) {
+  const params = {
+    TableName: TABLES.SCANS,
+    IndexName: 'UserIdIndex', // Need GSI on userId
+    KeyConditionExpression: 'userId = :userId',
+    ExpressionAttributeValues: {
+      ':userId': userId,
+    },
+    Limit: limit,
+    ScanIndexForward: false, // Latest first
+  };
 
+  try {
     const result = await dynamoDB.send(new QueryCommand(params));
     return result.Items || [];
+  } catch (error) {
+    console.error('Get user scans error:', error);
+    return [];
   }
-
+}
   async getScanById(scanId, userId) {
     const params = {
       TableName: TABLES.SCANS,
