@@ -2,119 +2,183 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const DynamoService = require('../services/dynamoService');
-const { sendSuccess, sendError } = require('../utils/response');
-const { FREE_SCAN_LIMIT, JWT_EXPIRY } = require('../config/constants');
+const dynamoService = require('../services/dynamoService');
 
 class AuthController {
-  static async register(req, res) {
+  // ==================== REGISTER ====================
+  async register(req, res) {
     try {
-      const { email, password, name } = req.body;
+      const { name, email, password } = req.body;
 
-      if (!email || !password || password.length < 6) {
-        return sendError(res, 'Email and password (min 6 chars) required', 400);
+      // Validation
+      if (!name || !email || !password) {
+        return res.status(400).json({
+          success: false,
+          error: 'Name, email, and password are required',
+        });
       }
 
-      const existingUser = await DynamoService.getUserByEmail(email);
+      // Email validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid email format',
+        });
+      }
+
+      // Password validation
+      if (password.length < 6) {
+        return res.status(400).json({
+          success: false,
+          error: 'Password must be at least 6 characters',
+        });
+      }
+
+      // Check if user exists
+      const existingUser = await dynamoService.getUserByEmail(email);
       if (existingUser) {
-        return sendError(res, 'User already exists', 409);
+        return res.status(409).json({
+          success: false,
+          error: 'Email already registered',
+        });
       }
 
-      const passwordHash = await bcrypt.hash(password, 10);
+      // Hash password
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Create user
       const userId = uuidv4();
-      
-      const userData = {
+      const user = await dynamoService.createUser({
         userId,
+        name,
         email,
-        name: name || email.split('@')[0],
-        passwordHash,
-        accountType: 'free',
-        scansUsedThisMonth: 0,
-        scanLimit: FREE_SCAN_LIMIT,
-        createdAt: new Date().toISOString(),
-        lastResetDate: new Date().toISOString()
-      };
+        password: hashedPassword,
+      });
 
-      await DynamoService.createUser(userData);
-
-      const token = jwt.sign(
-        { userId, email },
-        process.env.JWT_SECRET,
-        { expiresIn: JWT_EXPIRY }
-      );
-
-      delete userData.passwordHash;
-
-      return sendSuccess(res, {
-        message: 'User registered successfully',
-        token,
-        user: userData
-      }, 201);
-
-    } catch (error) {
-      console.error('Register error:', error);
-      return sendError(res, error.message, 500);
-    }
-  }
-
-  static async login(req, res) {
-    try {
-      const { email, password } = req.body;
-
-      if (!email || !password) {
-        return sendError(res, 'Email and password required', 400);
-      }
-
-      const user = await DynamoService.getUserByEmail(email);
-      if (!user) {
-        return sendError(res, 'Invalid credentials', 401);
-      }
-
-      const validPassword = await bcrypt.compare(password, user.passwordHash);
-      if (!validPassword) {
-        return sendError(res, 'Invalid credentials', 401);
-      }
-
+      // Generate JWT token
       const token = jwt.sign(
         { userId: user.userId, email: user.email },
         process.env.JWT_SECRET,
-        { expiresIn: JWT_EXPIRY }
+        { expiresIn: '30d' }
       );
 
-      delete user.passwordHash;
+      // Return success
+      return res.status(201).json({
+        success: true,
+        message: 'Registration successful',
+        token,
+        user: {
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+          scansUsed: user.scansUsed,
+          scanLimit: user.scanLimit,
+        },
+      });
 
-      return sendSuccess(res, {
+    } catch (error) {
+      console.error('Register error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Registration failed. Please try again.',
+      });
+    }
+  }
+
+  // ==================== LOGIN ====================
+  async login(req, res) {
+    try {
+      const { email, password } = req.body;
+
+      // Validation
+      if (!email || !password) {
+        return res.status(400).json({
+          success: false,
+          error: 'Email and password are required',
+        });
+      }
+
+      // Get user by email
+      const user = await dynamoService.getUserByEmail(email);
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid email or password',
+        });
+      }
+
+      // Verify password
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid email or password',
+        });
+      }
+
+      // Generate JWT token
+      const token = jwt.sign(
+        { userId: user.userId, email: user.email },
+        process.env.JWT_SECRET,
+        { expiresIn: '30d' }
+      );
+
+      // Return success
+      return res.status(200).json({
+        success: true,
         message: 'Login successful',
         token,
-        user
+        user: {
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+          scansUsed: user.scansUsed,
+          scanLimit: user.scanLimit,
+        },
       });
 
     } catch (error) {
       console.error('Login error:', error);
-      return sendError(res, error.message, 500);
+      return res.status(500).json({
+        success: false,
+        error: 'Login failed. Please try again.',
+      });
     }
   }
 
-  static async verifyToken(req, res) {
+  // ==================== VERIFY TOKEN ====================
+  async verifyToken(req, res) {
     try {
-      const user = await DynamoService.getUserById(req.user.userId);
-      
+      // User already attached by authenticate middleware
+      const user = await dynamoService.getUserById(req.userId);
+
       if (!user) {
-        return sendError(res, 'User not found', 404);
+        return res.status(404).json({
+          success: false,
+          error: 'User not found',
+        });
       }
 
-      delete user.passwordHash;
-
-      return sendSuccess(res, {
-        valid: true,
-        user
+      return res.status(200).json({
+        success: true,
+        user: {
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+          scansUsed: user.scansUsed,
+          scanLimit: user.scanLimit,
+        },
       });
 
     } catch (error) {
       console.error('Verify token error:', error);
-      return sendError(res, error.message, 500);
+      return res.status(500).json({
+        success: false,
+        error: 'Token verification failed',
+      });
     }
   }
 }
 
-module.exports = AuthController;
+module.exports = new AuthController();

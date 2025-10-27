@@ -1,72 +1,73 @@
 // src/controllers/userController.js
-const DynamoService = require('../services/dynamoService');
-const { sendSuccess, sendError } = require('../utils/response');
+const dynamoService = require('../services/dynamoService');
 
 class UserController {
-  static async getProfile(req, res) {
+  // Get user profile
+  async getProfile(req, res) {
     try {
-      const user = await DynamoService.getUserById(req.user.userId);
-      
+      const user = await dynamoService.getUserById(req.userId);
+
       if (!user) {
-        return sendError(res, 'User not found', 404);
+        return res.status(404).json({
+          success: false,
+          error: 'User not found',
+        });
       }
 
-      delete user.passwordHash;
-
-      return sendSuccess(res, { user });
-
-    } catch (error) {
-      console.error('Get profile error:', error);
-      return sendError(res, error.message, 500);
-    }
-  }
-
-  static async getUsage(req, res) {
-    try {
-      const user = await DynamoService.getUserById(req.user.userId);
-      
-      if (!user) {
-        return sendError(res, 'User not found', 404);
-      }
-
-      const usage = {
-        accountType: user.accountType,
-        scansUsedThisMonth: user.scansUsedThisMonth,
-        scanLimit: user.scanLimit,
-        scansRemaining: user.scanLimit - user.scansUsedThisMonth,
-        lastResetDate: user.lastResetDate
-      };
-
-      return sendSuccess(res, { usage });
-
-    } catch (error) {
-      console.error('Get usage error:', error);
-      return sendError(res, error.message, 500);
-    }
-  }
-
-  static async updateProfile(req, res) {
-    try {
-      const { name } = req.body;
-
-      if (!name) {
-        return sendError(res, 'Name is required', 400);
-      }
-
-      const updated = await DynamoService.updateUserProfile(req.user.userId, { name });
-
-      delete updated.passwordHash;
-
-      return sendSuccess(res, {
-        message: 'Profile updated successfully',
-        user: updated
+      return res.status(200).json({
+        success: true,
+        user: {
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+          scansUsed: user.scansUsed,
+          scanLimit: user.scanLimit,
+          createdAt: user.createdAt,
+          lastScanDate: user.lastScanDate,
+        },
       });
 
     } catch (error) {
-      console.error('Update profile error:', error);
-      return sendError(res, error.message, 500);
+      console.error('Get profile error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get profile',
+      });
+    }
+  }
+
+  // Get usage stats
+  async getUsage(req, res) {
+    try {
+      const user = await dynamoService.getUserById(req.userId);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: 'User not found',
+        });
+      }
+
+      const scansRemaining = user.scanLimit - user.scansUsed;
+
+      return res.status(200).json({
+        success: true,
+        usage: {
+          scansUsed: user.scansUsed,
+          scanLimit: user.scanLimit,
+          scansRemaining: Math.max(0, scansRemaining),
+          lastScanDate: user.lastScanDate,
+        },
+      });
+
+    } catch (error) {
+      console.error('Get usage error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get usage stats',
+      });
     }
   }
 }
 
-module.exports = UserController;
+module.exports = new UserController();

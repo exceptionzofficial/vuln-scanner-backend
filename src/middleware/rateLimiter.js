@@ -1,45 +1,41 @@
 // src/middleware/rateLimiter.js
-const { sendError } = require('../utils/response');
-const { RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_REQUESTS } = require('../config/constants');
+const dynamoService = require('../services/dynamoService');
 
-const requestCounts = new Map();
+const rateLimiter = async (req, res, next) => {
+  try {
+    const userId = req.userId;
 
-const rateLimiter = (req, res, next) => {
-  const userId = req.user?.userId;
-  
-  if (!userId) {
-    return next();
-  }
+    // Get user data
+    const user = await dynamoService.getUserById(userId);
 
-  const now = Date.now();
-  const userRequests = requestCounts.get(userId) || [];
-  
-  // Filter requests within window
-  const recentRequests = userRequests.filter(
-    timestamp => now - timestamp < RATE_LIMIT_WINDOW
-  );
-
-  if (recentRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
-    return sendError(res, 'Too many requests. Please try again later.', 429);
-  }
-
-  recentRequests.push(now);
-  requestCounts.set(userId, recentRequests);
-
-  // Cleanup old entries
-  if (requestCounts.size > 10000) {
-    const oldestAllowed = now - RATE_LIMIT_WINDOW;
-    for (const [id, timestamps] of requestCounts.entries()) {
-      const recent = timestamps.filter(t => t > oldestAllowed);
-      if (recent.length === 0) {
-        requestCounts.delete(id);
-      } else {
-        requestCounts.set(id, recent);
-      }
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
     }
-  }
 
-  next();
+    // Check scan limit
+    if (user.scansUsed >= user.scanLimit) {
+      return res.status(429).json({
+        success: false,
+        error: `Scan limit reached. You have used ${user.scansUsed}/${user.scanLimit} scans this month.`,
+        scansUsed: user.scansUsed,
+        scanLimit: user.scanLimit,
+      });
+    }
+
+    // Attach user to request
+    req.user = user;
+    next();
+
+  } catch (error) {
+    console.error('Rate limiter error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Rate limiting check failed',
+    });
+  }
 };
 
 module.exports = rateLimiter;

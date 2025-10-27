@@ -1,24 +1,40 @@
 // src/middleware/authenticate.js
 const jwt = require('jsonwebtoken');
-const { sendError } = require('../utils/response');
 
 const authenticate = (req, res, next) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    // Get token from header
+    const authHeader = req.headers.authorization;
 
-    if (!token) {
-      return sendError(res, 'No token provided', 401);
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'No token provided',
+      });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Attach user info to request
+    req.userId = decoded.userId;
+    req.userEmail = decoded.email;
+
+    next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
-      return sendError(res, 'Token expired', 401);
+      return res.status(401).json({
+        success: false,
+        error: 'Token expired',
+      });
     }
-    return sendError(res, 'Invalid token', 401);
+
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid token',
+    });
   }
 };
 
