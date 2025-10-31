@@ -27,3 +27,5 @@ Thumbs.db
 dist/
 build/
 .vercel/
+
+google-play-service-account.json
