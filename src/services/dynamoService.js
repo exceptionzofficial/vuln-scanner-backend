@@ -140,6 +140,61 @@ async getUserScans(userId, limit = 20) {
     const result = await dynamoDB.send(new GetCommand(params));
     return result.Item;
   }
+
+
+async updateUserSubscription(userId, subscriptionData) {
+  const params = {
+    TableName: TABLES.USERS,
+    Key: { userId },
+    UpdateExpression: `
+      SET subscriptionPlan = :plan,
+          scanLimit = :limit,
+          revenuecatUserId = :rcUserId,
+          updatedAt = :now
+    `,
+    ExpressionAttributeValues: {
+      ':plan': subscriptionData.plan,
+      ':limit': subscriptionData.scanLimit,
+      ':rcUserId': subscriptionData.revenuecat_user_id || userId,
+      ':now': new Date().toISOString(),
+    },
+    ReturnValues: 'ALL_NEW',
+  };
+
+  try {
+    const result = await dynamoDB.send(new UpdateCommand(params));
+    return result.Attributes;
+  } catch (error) {
+    console.error('Update subscription error:', error);
+    throw error;
+  }
 }
+
+/**
+ * Get user's subscription status
+ */
+async getUserSubscription(userId) {
+  const params = {
+    TableName: TABLES.USERS,
+    Key: { userId },
+  };
+
+  try {
+    const result = await dynamoDB.send(new GetCommand(params));
+    if (!result.Item) {
+      return {
+        subscriptionPlan: 'FREE',
+        scanLimit: 3,
+        scansUsed: 0,
+      };
+    }
+    return result.Item;
+  } catch (error) {
+    console.error('Get subscription error:', error);
+    throw error;
+  }
+}
+
+}  // ✅ ONLY ONE CLOSING BRACE
 
 module.exports = new DynamoService();

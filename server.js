@@ -5,7 +5,15 @@ const axios = require('axios');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const subscriptionService = require('./src/services/subscriptionService');
 require('dotenv').config();
+
+// ✅ ADD THIS DEBUG INFO
+console.log('🔧 Environment Check:');
+console.log('AWS Region:', process.env.AWS_REGION);
+console.log('AWS Access Key:', process.env.AWS_ACCESS_KEY_ID ? '✅ Set' : '❌ Missing');
+console.log('AWS Secret Key:', process.env.AWS_SECRET_ACCESS_KEY ? '✅ Set' : '❌ Missing');
+console.log('JWT Secret:', process.env.JWT_SECRET ? '✅ Set' : '❌ Missing');
 
 const dynamoService = require('./src/services/dynamoService');
 
@@ -434,6 +442,198 @@ app.get('/api/scans/:scanId', async (req, res) => {
 // ==================== ERROR HANDLING ====================
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
+});
+
+// Verify subscription purchase
+app.post('/api/subscription/verify', async (req, res) => {
+  try {
+    const { productId, purchaseToken, platform } = req.body;
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ success: false, error: 'No token' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+
+    if (platform === 'android') {
+      const packageName = 'com.exceptionz.novascanner'; // Your app package name
+      
+      // Verify with Google Play
+      const verification = await subscriptionService.verifyAndroidSubscription(
+        packageName,
+        productId,
+        purchaseToken
+      );
+
+      // Determine subscription plan
+      let plan = 'FREE';
+      let scanLimit = 3;
+
+      if (productId === 'nova_scanner_pro_monthly') {
+        plan = 'PRO';
+        scanLimit = 50;
+      } else if (productId === 'nova_scanner_enterprise_monthly') {
+        plan = 'ENTERPRISE';
+        scanLimit = 999999;
+      }
+
+      // Update user subscription
+      await subscriptionService.updateUserSubscription(decoded.userId, {
+        plan,
+        scanLimit,
+        expiry: new Date(verification.expiryTimeMillis).toISOString(),
+      });
+
+      return res.json({
+        success: true,
+        message: 'Subscription verified',
+        plan,
+        scanLimit,
+      });
+    }
+
+    return res.status(400).json({ success: false, error: 'Invalid platform' });
+  } catch (error) {
+    console.error('Verify subscription error:', error);
+    return res.status(500).json({ success: false, error: 'Verification failed' });
+  }
+});
+
+// Add at the top with other requires
+
+
+// ==================== SUBSCRIPTION ROUTES ====================
+
+/**
+ * Sync RevenueCat subscription to backend
+ * POST /api/subscription/sync-revenuecat
+ */
+app.post('/api/subscription/sync-revenuecat', async (req, res) => {
+  try {
+    const { revenuecat_user_id, plan, scanLimit, active_subscriptions } = req.body;
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+
+    console.log('📥 Syncing subscription for user:', decoded.userId);
+
+    // Sync subscription data
+    const result = await subscriptionService.syncSubscription(decoded.userId, {
+      revenuecat_user_id,
+      plan,
+      scanLimit,
+      active_subscriptions,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Subscription synced successfully',
+      plan,
+      scanLimit,
+      user: result.user,
+    });
+  } catch (error) {
+    console.error('❌ Sync subscription error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to sync subscription',
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * Get user's subscription status
+ * GET /api/subscription/status
+ */
+app.get('/api/subscription/status', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+
+    const status = await subscriptionService.getSubscriptionStatus(decoded.userId);
+
+    return res.json({
+      success: true,
+      subscription: status,
+    });
+  } catch (error) {
+    console.error('❌ Get subscription status error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get subscription status',
+    });
+  }
+});
+
+/**
+ * RevenueCat Webhook Handler (for production)
+ * POST /api/subscription/webhook
+ */
+app.post('/api/subscription/webhook', async (req, res) => {
+  try {
+    const webhookData = req.body;
+    
+    console.log('🔔 Received RevenueCat webhook');
+
+    // Verify webhook signature (optional but recommended)
+    // const signature = req.headers['x-revenuecat-signature'];
+    // Verify signature here...
+
+    await subscriptionService.handleWebhook(webhookData);
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Webhook processing failed',
+    });
+  }
+});
+
+/**
+ * Cancel subscription
+ * POST /api/subscription/cancel
+ */
+app.post('/api/subscription/cancel', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+
+    const result = await subscriptionService.cancelSubscription(decoded.userId);
+
+    return res.json({
+      success: true,
+      message: 'Subscription canceled successfully',
+      user: result.user,
+    });
+  } catch (error) {
+    console.error('❌ Cancel subscription error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to cancel subscription',
+    });
+  }
 });
 
 // ==================== START SERVER ====================
