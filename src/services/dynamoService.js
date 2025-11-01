@@ -86,35 +86,120 @@ class DynamoService {
     return result.Attributes;
   }
 
-    /**
-   * Update user's scan limit after subscription purchase
-   */
-  async updateUserScanLimit(userId, subscriptionData) {
+/**
+ * Update user's scan limit after subscription purchase
+ * AND reset scansUsed if it's a new billing period
+ */
+async updateUserScanLimit(userId, subscriptionData) {
+  try {
+    // First, get current user data
+    const currentUser = await this.getUserById(userId);
+    
+    const now = new Date().toISOString();
+    let scansUsed = currentUser?.scansUsed || 0;
+    
+    // Check if this is a new subscription or renewal
+    const isNewSubscription = !currentUser?.subscriptionPlan || 
+                               currentUser?.subscriptionPlan === 'FREE' ||
+                               currentUser?.subscriptionPlan !== subscriptionData.plan;
+    
+    // Reset scans if new subscription or plan upgrade
+    if (isNewSubscription) {
+      scansUsed = 0;
+      console.log('🔄 Resetting scansUsed to 0 (new subscription/upgrade)');
+    }
+    
+    // Calculate next reset date (30 days from now)
+    const nextResetDate = new Date();
+    nextResetDate.setDate(nextResetDate.getDate() + 30);
+    
     const params = {
       TableName: TABLES.USERS,
       Key: { userId },
       UpdateExpression: `
         SET subscriptionPlan = :plan,
             scanLimit = :limit,
+            scansUsed = :scansUsed,
+            subscriptionStartDate = :startDate,
+            nextResetDate = :resetDate,
             updatedAt = :now
       `,
       ExpressionAttributeValues: {
         ':plan': subscriptionData.plan,
         ':limit': subscriptionData.scanLimit,
-        ':now': new Date().toISOString(),
+        ':scansUsed': scansUsed,
+        ':startDate': now,
+        ':resetDate': nextResetDate.toISOString(),
+        ':now': now,
       },
       ReturnValues: 'ALL_NEW',
     };
 
-    try {
-      const result = await dynamoDB.send(new UpdateCommand(params));
-      console.log('✅ User scan limit updated:', result.Attributes);
-      return result.Attributes;
-    } catch (error) {
-      console.error('❌ Update scan limit error:', error);
-      throw error;
-    }
+    const result = await dynamoDB.send(new UpdateCommand(params));
+    console.log('✅ User subscription updated:', {
+      plan: result.Attributes.subscriptionPlan,
+      scanLimit: result.Attributes.scanLimit,
+      scansUsed: result.Attributes.scansUsed,
+      nextReset: result.Attributes.nextResetDate,
+    });
+    
+    return result.Attributes;
+  } catch (error) {
+    console.error('❌ Update scan limit error:', error);
+    throw error;
   }
+}
+
+/**
+ * Check and reset scans if billing period renewed
+ */
+async checkAndResetScans(userId) {
+  try {
+    const user = await this.getUserById(userId);
+    
+    if (!user || !user.nextResetDate) {
+      return user;
+    }
+    
+    const now = new Date();
+    const resetDate = new Date(user.nextResetDate);
+    
+    // If reset date has passed, reset scans
+    if (now >= resetDate) {
+      console.log('🔄 Resetting scans for user (billing period renewed)');
+      
+      // Calculate next reset date (30 days from now)
+      const nextResetDate = new Date();
+      nextResetDate.setDate(nextResetDate.getDate() + 30);
+      
+      const params = {
+        TableName: TABLES.USERS,
+        Key: { userId },
+        UpdateExpression: `
+          SET scansUsed = :zero,
+              nextResetDate = :resetDate,
+              lastResetDate = :now,
+              updatedAt = :now
+        `,
+        ExpressionAttributeValues: {
+          ':zero': 0,
+          ':resetDate': nextResetDate.toISOString(),
+          ':now': now.toISOString(),
+        },
+        ReturnValues: 'ALL_NEW',
+      };
+      
+      const result = await dynamoDB.send(new UpdateCommand(params));
+      return result.Attributes;
+    }
+    
+    return user;
+  } catch (error) {
+    console.error('❌ Check and reset scans error:', error);
+    return user;
+  }
+}
+
 
 
   // ==================== SCAN OPERATIONS ====================

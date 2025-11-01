@@ -237,7 +237,7 @@ app.get('/api/auth/verify', async (req, res) => {
 
 // ==================== USER ROUTES ====================
 
-// Get usage
+// Get usage (WITH AUTO RESET CHECK)
 app.get('/api/user/usage', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -248,18 +248,32 @@ app.get('/api/user/usage', async (req, res) => {
     const token = authHeader.substring(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
 
-    const user = await dynamoService.getUserByEmail(decoded.email);
+    // Check if scans need to be reset (monthly renewal)
+    let user = await dynamoService.checkAndResetScans(decoded.userId);
+    
+    if (!user) {
+      user = await dynamoService.getUserByEmail(decoded.email);
+    }
+    
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
+    const scansRemaining = Math.max(0, (user.scanLimit || 3) - (user.scansUsed || 0));
+    const daysUntilReset = user.nextResetDate ? 
+      Math.ceil((new Date(user.nextResetDate) - new Date()) / (1000 * 60 * 60 * 24)) : 
+      30;
+
     return res.json({
       success: true,
       usage: {
-        scansUsed: user.scansUsed,
-        scanLimit: user.scanLimit,
-        scansRemaining: Math.max(0, user.scanLimit - user.scansUsed),
+        scansUsed: user.scansUsed || 0,
+        scanLimit: user.scanLimit || 3,
+        scansRemaining,
         lastScanDate: user.lastScanDate,
+        subscriptionPlan: user.subscriptionPlan || 'FREE',
+        nextResetDate: user.nextResetDate,
+        daysUntilReset: Math.max(0, daysUntilReset),
       },
     });
 
@@ -267,6 +281,7 @@ app.get('/api/user/usage', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid token' });
   }
 });
+
 
 // ==================== SCAN ROUTES ====================
 
@@ -301,7 +316,7 @@ app.post('/test-scan', async (req, res) => {
   }
 });
 
-// Authenticated scan
+// Authenticated scan (WITH AUTO RESET CHECK)
 app.post('/api/scans', async (req, res) => {
   try {
     const { targetUrl } = req.body;
@@ -315,16 +330,42 @@ app.post('/api/scans', async (req, res) => {
     const token = authHeader.substring(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
 
-    const user = await dynamoService.getUserByEmail(decoded.email);
+    // Check if scans need to be reset (monthly renewal)
+    let user = await dynamoService.checkAndResetScans(decoded.userId);
+    
+    if (!user) {
+      user = await dynamoService.getUserByEmail(decoded.email);
+    }
+    
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
     // Check scan limit
-    if (user.scansUsed >= user.scanLimit) {
+    const currentScansUsed = user.scansUsed || 0;
+    const scanLimit = user.scanLimit || 3;
+    const subscriptionPlan = user.subscriptionPlan || 'FREE';
+    
+    if (currentScansUsed >= scanLimit) {
+      let upgradeMessage = '';
+      
+      if (subscriptionPlan === 'FREE') {
+        upgradeMessage = 'Upgrade to PRO (50 scans/month) or ENTERPRISE (unlimited) to continue scanning!';
+      } else if (subscriptionPlan === 'PRO') {
+        upgradeMessage = 'Your PRO plan includes 50 scans per month. Upgrade to ENTERPRISE for unlimited scanning!';
+      }
+      
+      const daysUntilReset = user.nextResetDate ? 
+        Math.ceil((new Date(user.nextResetDate) - new Date()) / (1000 * 60 * 60 * 24)) : 
+        30;
+      
       return res.status(429).json({
         success: false,
-        error: `Scan limit reached (${user.scansUsed}/${user.scanLimit})`,
+        error: `Scan limit reached (${currentScansUsed}/${scanLimit})`,
+        message: upgradeMessage,
+        scansRemaining: 0,
+        daysUntilReset: Math.max(0, daysUntilReset),
+        currentPlan: subscriptionPlan,
       });
     }
 
@@ -354,13 +395,14 @@ app.post('/api/scans', async (req, res) => {
     });
 
     // Update user scan count
-    await dynamoService.updateUserScans(user.userId, user.scansUsed + 1);
+    await dynamoService.updateUserScans(user.userId, currentScansUsed + 1);
 
     return res.json({
       success: true,
       scanId,
       scan: scanResult,
-      scansRemaining: Math.max(0, user.scanLimit - (user.scansUsed + 1)),
+      scansRemaining: Math.max(0, scanLimit - (currentScansUsed + 1)),
+      currentPlan: subscriptionPlan,
     });
 
   } catch (error) {
@@ -371,6 +413,7 @@ app.post('/api/scans', async (req, res) => {
     });
   }
 });
+
 
 // Get user's scan history
 app.get('/api/scans', async (req, res) => {
