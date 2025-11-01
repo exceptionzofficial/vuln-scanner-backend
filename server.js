@@ -235,9 +235,53 @@ app.get('/api/auth/verify', async (req, res) => {
   }
 });
 
-// ==================== USER ROUTES ====================
+// ==================== SUBSCRIPTION EXPIRY CHECK ====================
 
-// Get usage (WITH AUTO RESET CHECK)
+/**
+ * Check if subscription expired and downgrade to FREE
+ */
+async function checkSubscriptionExpiry(user) {
+  if (!user.subscriptionExpiryDate || user.subscriptionPlan === 'FREE') {
+    return user;
+  }
+  
+  const now = new Date();
+  const expiry = new Date(user.subscriptionExpiryDate);
+  
+  // If subscription expired, downgrade to FREE
+  if (now > expiry && user.isSubscriptionActive) {
+    console.log('⚠️ Subscription expired for user:', user.userId);
+    console.log('Expiry date:', user.subscriptionExpiryDate);
+    console.log('Downgrading to FREE plan');
+    
+    const params = {
+      TableName: 'vuln-scanner-users',
+      Key: { userId: user.userId },
+      UpdateExpression: `
+        SET subscriptionPlan = :free,
+            scanLimit = :limit,
+            isSubscriptionActive = :inactive,
+            subscriptionExpiredAt = :now,
+            updatedAt = :now
+      `,
+      ExpressionAttributeValues: {
+        ':free': 'FREE',
+        ':limit': 3,
+        ':inactive': false,
+        ':now': now.toISOString(),
+      },
+      ReturnValues: 'ALL_NEW',
+    };
+    
+    const { DynamoDBDocumentClient, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+    const result = await dynamoService.dynamoDB.send(new UpdateCommand(params));
+    return result.Attributes;
+  }
+  
+  return user;
+}
+
+// Get usage (WITH EXPIRY CHECK)
 app.get('/api/user/usage', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -248,21 +292,28 @@ app.get('/api/user/usage', async (req, res) => {
     const token = authHeader.substring(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
 
-    // Check if scans need to be reset (monthly renewal)
-    let user = await dynamoService.checkAndResetScans(decoded.userId);
-    
-    if (!user) {
-      user = await dynamoService.getUserByEmail(decoded.email);
-    }
+    // Get user
+    let user = await dynamoService.getUserByEmail(decoded.email);
     
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
+    
+    // Check if subscription expired
+    user = await checkSubscriptionExpiry(user);
+    
+    // Check if scans need to be reset (monthly renewal)
+    user = await dynamoService.checkAndResetScans(decoded.userId);
 
     const scansRemaining = Math.max(0, (user.scanLimit || 3) - (user.scansUsed || 0));
-    const daysUntilReset = user.nextResetDate ? 
-      Math.ceil((new Date(user.nextResetDate) - new Date()) / (1000 * 60 * 60 * 24)) : 
-      30;
+    const subscriptionActive = user.isSubscriptionActive !== false;
+    
+    let daysUntilExpiry = null;
+    if (user.subscriptionExpiryDate && subscriptionActive) {
+      daysUntilExpiry = Math.ceil(
+        (new Date(user.subscriptionExpiryDate) - new Date()) / (1000 * 60 * 60 * 24)
+      );
+    }
 
     return res.json({
       success: true,
@@ -272,13 +323,16 @@ app.get('/api/user/usage', async (req, res) => {
         scansRemaining,
         lastScanDate: user.lastScanDate,
         subscriptionPlan: user.subscriptionPlan || 'FREE',
+        subscriptionActive,
+        subscriptionExpiryDate: user.subscriptionExpiryDate,
+        daysUntilExpiry: Math.max(0, daysUntilExpiry || 0),
         nextResetDate: user.nextResetDate,
-        daysUntilReset: Math.max(0, daysUntilReset),
       },
     });
 
   } catch (error) {
-    return res.status(401).json({ success: false, error: 'Invalid token' });
+    console.error('Get usage error:', error);
+    return res.status(500).json({ success: false, error: 'Failed to get usage' });
   }
 });
 

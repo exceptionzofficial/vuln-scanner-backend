@@ -88,11 +88,10 @@ class DynamoService {
 
 /**
  * Update user's scan limit after subscription purchase
- * AND reset scansUsed if it's a new billing period
+ * Stores expiry date for validation
  */
 async updateUserScanLimit(userId, subscriptionData) {
   try {
-    // First, get current user data
     const currentUser = await this.getUserById(userId);
     
     const now = new Date().toISOString();
@@ -109,9 +108,12 @@ async updateUserScanLimit(userId, subscriptionData) {
       console.log('🔄 Resetting scansUsed to 0 (new subscription/upgrade)');
     }
     
-    // Calculate next reset date (30 days from now)
+    // Calculate dates
     const nextResetDate = new Date();
     nextResetDate.setDate(nextResetDate.getDate() + 30);
+    
+    // Use expiry date from RevenueCat if available
+    const expiryDate = subscriptionData.expiryDate || nextResetDate.toISOString();
     
     const params = {
       TableName: TABLES.USERS,
@@ -121,7 +123,9 @@ async updateUserScanLimit(userId, subscriptionData) {
             scanLimit = :limit,
             scansUsed = :scansUsed,
             subscriptionStartDate = :startDate,
+            subscriptionExpiryDate = :expiryDate,
             nextResetDate = :resetDate,
+            isSubscriptionActive = :isActive,
             updatedAt = :now
       `,
       ExpressionAttributeValues: {
@@ -129,7 +133,9 @@ async updateUserScanLimit(userId, subscriptionData) {
         ':limit': subscriptionData.scanLimit,
         ':scansUsed': scansUsed,
         ':startDate': now,
+        ':expiryDate': expiryDate,
         ':resetDate': nextResetDate.toISOString(),
+        ':isActive': subscriptionData.isActive !== false,
         ':now': now,
       },
       ReturnValues: 'ALL_NEW',
@@ -139,8 +145,8 @@ async updateUserScanLimit(userId, subscriptionData) {
     console.log('✅ User subscription updated:', {
       plan: result.Attributes.subscriptionPlan,
       scanLimit: result.Attributes.scanLimit,
-      scansUsed: result.Attributes.scansUsed,
-      nextReset: result.Attributes.nextResetDate,
+      expiryDate: result.Attributes.subscriptionExpiryDate,
+      isActive: result.Attributes.isSubscriptionActive,
     });
     
     return result.Attributes;
