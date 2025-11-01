@@ -439,6 +439,65 @@ app.get('/api/scans/:scanId', async (req, res) => {
   }
 });
 
+
+// ==================== SIMPLIFIED SUBSCRIPTION UPDATE ====================
+
+/**
+ * Update user subscription after RevenueCat confirms payment
+ * POST /api/user/update-subscription
+ * Body: { plan: 'PRO', scanLimit: 50 }
+ */
+app.post('/api/user/update-subscription', async (req, res) => {
+  try {
+    const { plan, scanLimit } = req.body;
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
+
+    console.log('📥 Updating subscription for user:', decoded.userId);
+    console.log('Plan:', plan, '| Scan Limit:', scanLimit);
+
+    // Validate plan
+    const validPlans = ['FREE', 'PRO', 'ENTERPRISE'];
+    if (!validPlans.includes(plan)) {
+      return res.status(400).json({ success: false, error: 'Invalid plan' });
+    }
+
+    // Update user's scan limit in DynamoDB
+    const updatedUser = await dynamoService.updateUserScanLimit(decoded.userId, {
+      plan,
+      scanLimit,
+    });
+
+    console.log('✅ Subscription updated successfully');
+
+    return res.json({
+      success: true,
+      message: 'Subscription updated successfully',
+      user: {
+        userId: updatedUser.userId,
+        plan: updatedUser.subscriptionPlan || plan,
+        scanLimit: updatedUser.scanLimit,
+        scansUsed: updatedUser.scansUsed || 0,
+        scansRemaining: (updatedUser.scanLimit || 0) - (updatedUser.scansUsed || 0),
+      },
+    });
+  } catch (error) {
+    console.error('❌ Update subscription error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to update subscription',
+      details: error.message,
+    });
+  }
+});
+
+
 // ==================== ERROR HANDLING ====================
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });

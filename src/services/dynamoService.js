@@ -86,6 +86,37 @@ class DynamoService {
     return result.Attributes;
   }
 
+    /**
+   * Update user's scan limit after subscription purchase
+   */
+  async updateUserScanLimit(userId, subscriptionData) {
+    const params = {
+      TableName: TABLES.USERS,
+      Key: { userId },
+      UpdateExpression: `
+        SET subscriptionPlan = :plan,
+            scanLimit = :limit,
+            updatedAt = :now
+      `,
+      ExpressionAttributeValues: {
+        ':plan': subscriptionData.plan,
+        ':limit': subscriptionData.scanLimit,
+        ':now': new Date().toISOString(),
+      },
+      ReturnValues: 'ALL_NEW',
+    };
+
+    try {
+      const result = await dynamoDB.send(new UpdateCommand(params));
+      console.log('✅ User scan limit updated:', result.Attributes);
+      return result.Attributes;
+    } catch (error) {
+      console.error('❌ Update scan limit error:', error);
+      throw error;
+    }
+  }
+
+
   // ==================== SCAN OPERATIONS ====================
   
   async createScan(scanData) {
