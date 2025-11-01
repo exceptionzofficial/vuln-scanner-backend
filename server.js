@@ -458,7 +458,7 @@ app.post('/api/subscription/verify', async (req, res) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
 
     if (platform === 'android') {
-      const packageName = 'com.exceptionz.novascanner'; // Your app package name
+      const packageName = 'com.vulnscannerapp'; // Your app package name
       
       // Verify with Google Play
       const verification = await subscriptionService.verifyAndroidSubscription(
