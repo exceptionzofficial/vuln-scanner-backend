@@ -546,7 +546,7 @@ app.get('/api/scans/:scanId', async (req, res) => {
  */
 app.post('/api/user/update-subscription', async (req, res) => {
   try {
-    const { plan, scanLimit, expiryDate, isActive } = req.body;
+    const { plan, scanLimit } = req.body;
     const authHeader = req.headers.authorization;
     
     if (!authHeader) {
@@ -556,36 +556,32 @@ app.post('/api/user/update-subscription', async (req, res) => {
     const token = authHeader.substring(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret-key');
 
-    // SERVER-SIDE SAFEGUARD: Prevent accidental downgrades
-    const currentUser = await dynamoService.getUserById(decoded.userId);
-    const plans = { FREE: 0, PRO: 1, ENTERPRISE: 2 };
-    const currentPlanLevel = plans[currentUser.subscriptionPlan] || 0;
-    const newPlanLevel = plans[plan] || 0;
+    console.log('📥 Updating subscription for user:', decoded.userId);
+    console.log('Plan:', plan, '| Scan Limit:', scanLimit);
 
-    if (newPlanLevel < currentPlanLevel) {
-        console.warn(`⚠️ Blocked attempt to downgrade user ${decoded.userId} from ${currentUser.subscriptionPlan} to ${plan}.`);
-        return res.status(409).json({
-            success: false,
-            error: 'Cannot downgrade subscription via this endpoint.',
-            message: `User already has a higher plan (${currentUser.subscriptionPlan}).`
-        });
+    // Validate plan
+    const validPlans = ['FREE', 'PRO', 'ENTERPRISE'];
+    if (!validPlans.includes(plan)) {
+      return res.status(400).json({ success: false, error: 'Invalid plan' });
     }
 
-    console.log('📥 Updating subscription for user:', decoded.userId);
+    // Update user's scan limit in DynamoDB
     const updatedUser = await dynamoService.updateUserScanLimit(decoded.userId, {
       plan,
       scanLimit,
-      expiryDate,
-      isActive
     });
+
+    console.log('✅ Subscription updated successfully');
 
     return res.json({
       success: true,
       message: 'Subscription updated successfully',
       user: {
         userId: updatedUser.userId,
-        plan: updatedUser.subscriptionPlan,
+        plan: updatedUser.subscriptionPlan || plan,
         scanLimit: updatedUser.scanLimit,
+        scansUsed: updatedUser.scansUsed || 0,
+        scansRemaining: (updatedUser.scanLimit || 0) - (updatedUser.scansUsed || 0),
       },
     });
   } catch (error) {
@@ -597,7 +593,6 @@ app.post('/api/user/update-subscription', async (req, res) => {
     });
   }
 });
-
 
 
 // ==================== ERROR HANDLING ====================
