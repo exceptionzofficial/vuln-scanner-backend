@@ -1,4 +1,7 @@
 // server.js - WITH DYNAMODB
+// IMPORTANT: Load dotenv FIRST before any other imports that use env variables
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -6,7 +9,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const subscriptionService = require('./src/services/subscriptionService');
-require('dotenv').config();
 
 // ✅ ADD THIS DEBUG INFO
 console.log('🔧 Environment Check:');
@@ -235,6 +237,185 @@ app.get('/api/auth/verify', async (req, res) => {
   }
 });
 
+// ==================== FORGOT PASSWORD ROUTES ====================
+
+const emailService = require('./src/services/emailService');
+
+// FORGOT PASSWORD - Send OTP
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    console.log('Forgot password request for:', email);
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required',
+      });
+    }
+
+    // Check if user exists
+    const user = await dynamoService.getUserByEmail(email);
+    if (!user) {
+      // For security, don't reveal if email exists or not
+      return res.status(200).json({
+        success: true,
+        message: 'If this email is registered, you will receive an OTP shortly.',
+      });
+    }
+
+    // Generate and store OTP
+    const otp = emailService.generateOTP();
+    emailService.storeOTP(email, otp);
+
+    // Send OTP email
+    await emailService.sendOTPEmail(email, otp);
+
+    console.log('✅ OTP sent to:', email);
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent to your email address.',
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to send OTP. Please try again later.',
+    });
+  }
+});
+
+// VERIFY OTP
+app.post('/api/auth/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    console.log('Verify OTP request for:', email);
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and OTP are required',
+      });
+    }
+
+    // Verify OTP
+    const result = emailService.verifyOTP(email, otp);
+
+    if (!result.valid) {
+      return res.status(400).json({
+        success: false,
+        error: result.error,
+      });
+    }
+
+    // Generate a temporary reset token (valid for 5 minutes)
+    const resetToken = jwt.sign(
+      { email: email.toLowerCase(), purpose: 'password-reset' },
+      process.env.JWT_SECRET || 'default-secret-key',
+      { expiresIn: '5m' }
+    );
+
+    console.log('✅ OTP verified for:', email);
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully.',
+      resetToken,
+    });
+
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Verification failed. Please try again.',
+    });
+  }
+});
+
+// RESET PASSWORD
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+
+    console.log('Reset password request received');
+
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Reset token and new password are required',
+      });
+    }
+
+    // Validate password
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 6 characters',
+      });
+    }
+
+    // Verify reset token
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET || 'default-secret-key');
+
+      if (decoded.purpose !== 'password-reset') {
+        throw new Error('Invalid token purpose');
+      }
+    } catch (tokenError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Reset link has expired. Please request a new OTP.',
+      });
+    }
+
+    // Get user
+    const user = await dynamoService.getUserByEmail(decoded.email);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password in DynamoDB
+    const { DynamoDBDocumentClient, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+    const params = {
+      TableName: 'vuln-scanner-users',
+      Key: { userId: user.userId },
+      UpdateExpression: 'SET password = :password, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':password': hashedPassword,
+        ':now': new Date().toISOString(),
+      },
+      ReturnValues: 'ALL_NEW',
+    };
+
+    await dynamoService.dynamoDB.send(new UpdateCommand(params));
+
+    console.log('✅ Password reset successful for:', decoded.email);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password reset successful. You can now login with your new password.',
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Password reset failed. Please try again.',
+    });
+  }
+});
+
 // ==================== SUBSCRIPTION EXPIRY CHECK ====================
 
 /**
@@ -244,16 +425,16 @@ async function checkSubscriptionExpiry(user) {
   if (!user.subscriptionExpiryDate || user.subscriptionPlan === 'FREE') {
     return user;
   }
-  
+
   const now = new Date();
   const expiry = new Date(user.subscriptionExpiryDate);
-  
+
   // If subscription expired, downgrade to FREE
   if (now > expiry && user.isSubscriptionActive) {
     console.log('⚠️ Subscription expired for user:', user.userId);
     console.log('Expiry date:', user.subscriptionExpiryDate);
     console.log('Downgrading to FREE plan');
-    
+
     const params = {
       TableName: 'vuln-scanner-users',
       Key: { userId: user.userId },
@@ -272,12 +453,12 @@ async function checkSubscriptionExpiry(user) {
       },
       ReturnValues: 'ALL_NEW',
     };
-    
+
     const { DynamoDBDocumentClient, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
     const result = await dynamoService.dynamoDB.send(new UpdateCommand(params));
     return result.Attributes;
   }
-  
+
   return user;
 }
 
@@ -294,20 +475,20 @@ app.get('/api/user/usage', async (req, res) => {
 
     // Get user
     let user = await dynamoService.getUserByEmail(decoded.email);
-    
+
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
-    
+
     // Check if subscription expired
     user = await checkSubscriptionExpiry(user);
-    
+
     // Check if scans need to be reset (monthly renewal)
     user = await dynamoService.checkAndResetScans(decoded.userId);
 
     const scansRemaining = Math.max(0, (user.scanLimit || 3) - (user.scansUsed || 0));
     const subscriptionActive = user.isSubscriptionActive !== false;
-    
+
     let daysUntilExpiry = null;
     if (user.subscriptionExpiryDate && subscriptionActive) {
       daysUntilExpiry = Math.ceil(
@@ -343,7 +524,7 @@ app.get('/api/user/usage', async (req, res) => {
 app.post('/test-scan', async (req, res) => {
   try {
     const { targetUrl } = req.body;
-    
+
     if (!targetUrl || !targetUrl.startsWith('http')) {
       return res.status(400).json({
         success: false,
@@ -363,9 +544,9 @@ app.post('/test-scan', async (req, res) => {
 
   } catch (error) {
     console.error('Test scan error:', error.message);
-    return res.status(500).json({ 
+    return res.status(500).json({
       success: false,
-      error: error.response?.data?.error || 'Scan failed' 
+      error: error.response?.data?.error || 'Scan failed'
     });
   }
 });
@@ -374,7 +555,7 @@ app.post('/test-scan', async (req, res) => {
 app.post('/api/scans', async (req, res) => {
   try {
     const { targetUrl } = req.body;
-    
+
     // Verify token
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -386,11 +567,11 @@ app.post('/api/scans', async (req, res) => {
 
     // Check if scans need to be reset (monthly renewal)
     let user = await dynamoService.checkAndResetScans(decoded.userId);
-    
+
     if (!user) {
       user = await dynamoService.getUserByEmail(decoded.email);
     }
-    
+
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
@@ -399,20 +580,20 @@ app.post('/api/scans', async (req, res) => {
     const currentScansUsed = user.scansUsed || 0;
     const scanLimit = user.scanLimit || 3;
     const subscriptionPlan = user.subscriptionPlan || 'FREE';
-    
+
     if (currentScansUsed >= scanLimit) {
       let upgradeMessage = '';
-      
+
       if (subscriptionPlan === 'FREE') {
         upgradeMessage = 'Upgrade to PRO (50 scans/month) or ENTERPRISE (unlimited) to continue scanning!';
       } else if (subscriptionPlan === 'PRO') {
         upgradeMessage = 'Your PRO plan includes 50 scans per month. Upgrade to ENTERPRISE for unlimited scanning!';
       }
-      
-      const daysUntilReset = user.nextResetDate ? 
-        Math.ceil((new Date(user.nextResetDate) - new Date()) / (1000 * 60 * 60 * 24)) : 
+
+      const daysUntilReset = user.nextResetDate ?
+        Math.ceil((new Date(user.nextResetDate) - new Date()) / (1000 * 60 * 60 * 24)) :
         30;
-      
+
       return res.status(429).json({
         success: false,
         error: `Scan limit reached (${currentScansUsed}/${scanLimit})`,
@@ -461,9 +642,9 @@ app.post('/api/scans', async (req, res) => {
 
   } catch (error) {
     console.error('Scan error:', error.message);
-    return res.status(500).json({ 
+    return res.status(500).json({
       success: false,
-      error: error.response?.data?.error || 'Scan failed' 
+      error: error.response?.data?.error || 'Scan failed'
     });
   }
 });
@@ -505,7 +686,7 @@ app.get('/api/scans/:scanId', async (req, res) => {
   try {
     const { scanId } = req.params;
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ success: false, error: 'No token' });
     }
@@ -548,7 +729,7 @@ app.post('/api/user/update-subscription', async (req, res) => {
   try {
     const { plan, scanLimit } = req.body;
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader) {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
@@ -605,7 +786,7 @@ app.post('/api/subscription/verify', async (req, res) => {
   try {
     const { productId, purchaseToken, platform } = req.body;
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader) {
       return res.status(401).json({ success: false, error: 'No token' });
     }
@@ -615,7 +796,7 @@ app.post('/api/subscription/verify', async (req, res) => {
 
     if (platform === 'android') {
       const packageName = 'com.vulnscannerapp'; // Your app package name
-      
+
       // Verify with Google Play
       const verification = await subscriptionService.verifyAndroidSubscription(
         packageName,
@@ -670,7 +851,7 @@ app.post('/api/subscription/sync-revenuecat', async (req, res) => {
   try {
     const { revenuecat_user_id, plan, scanLimit, active_subscriptions } = req.body;
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader) {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
@@ -712,7 +893,7 @@ app.post('/api/subscription/sync-revenuecat', async (req, res) => {
 app.get('/api/subscription/status', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader) {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
@@ -742,7 +923,7 @@ app.get('/api/subscription/status', async (req, res) => {
 app.post('/api/subscription/webhook', async (req, res) => {
   try {
     const webhookData = req.body;
-    
+
     console.log('🔔 Received RevenueCat webhook');
 
     // Verify webhook signature (optional but recommended)
@@ -768,7 +949,7 @@ app.post('/api/subscription/webhook', async (req, res) => {
 app.post('/api/subscription/cancel', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader) {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }

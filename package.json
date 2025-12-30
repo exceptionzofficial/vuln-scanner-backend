@@ -25,6 +25,7 @@
     "express": "^4.21.2",
     "googleapis": "^164.1.0",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.9.16",
     "uuid": "^8.3.2"
   },
   "devDependencies": {
